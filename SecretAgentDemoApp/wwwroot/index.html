@@ -41,30 +41,22 @@
 					<span id="spinner" class="ml-2 hidden h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
 				</button>
 			</form>
+			<p id="request-status" class="mt-4 hidden rounded-lg bg-sky-50 p-3 text-sm font-medium text-sky-800" role="status"></p>
 			<p id="success-message" class="mt-4 hidden rounded-lg bg-emerald-50 p-3 text-sm font-medium text-emerald-800"></p>
 		</section>
 	</main>
 
 	<div id="diagnostic-modal" class="fixed inset-0 hidden items-center justify-center bg-slate-950/70 p-5">
-		<section class="w-full max-w-2xl rounded-2xl border border-red-300 bg-white p-6 shadow-2xl" role="alertdialog" aria-modal="true" aria-labelledby="diagnostic-title">
+		<section class="w-full max-w-md rounded-2xl border border-red-300 bg-white p-6 shadow-2xl" role="alertdialog" aria-modal="true" aria-labelledby="diagnostic-title">
 			<div class="flex items-start justify-between gap-4">
 				<div>
-					<p class="text-sm font-bold uppercase tracking-wider text-red-600">Production diagnostic</p>
-					<h2 id="diagnostic-title" class="mt-1 text-2xl font-bold text-red-700">🚨 HTTP 500 Internal Server Error</h2>
+					<p id="diagnostic-eyebrow" class="text-sm font-bold uppercase tracking-wider text-red-600">Checkout unavailable</p>
+					<h2 id="diagnostic-title" class="mt-1 text-2xl font-bold text-red-700">We couldn't apply your promo code</h2>
 				</div>
 				<button id="close-modal" class="text-2xl text-slate-500 hover:text-slate-800" aria-label="Close">&times;</button>
 			</div>
-			<div class="mt-5 grid gap-3 sm:grid-cols-2">
-				<div class="rounded-lg bg-red-50 p-3"><p class="text-xs font-semibold uppercase text-red-600">Exception</p><p id="exception-badge" class="mt-1 font-mono text-sm font-bold">System.NullReferenceException</p></div>
-				<div class="rounded-lg bg-red-50 p-3"><p class="text-xs font-semibold uppercase text-red-600">Failing file</p><p id="location" class="mt-1 font-mono text-sm font-bold">PromoController.cs (Line 35)</p></div>
-			</div>
-			<div class="mt-5">
-				<p class="mb-2 text-sm font-semibold text-slate-700">Stack trace preview</p>
-				<pre id="stack-trace" class="overflow-x-auto rounded-lg bg-slate-950 p-4 text-xs leading-6 text-cyan-200">at PromoApp.Api.Controllers.PromoController.RedeemPromo(...)
-	in /src/Controllers/PromoController.cs:line 35</pre>
-			</div>
-			<button id="incident-button" class="mt-6 w-full rounded-lg bg-red-600 px-4 py-3 font-semibold text-white hover:bg-red-700">Create Incident Ticket in ServiceNow / n8n</button>
-			<p id="incident-confirmation" class="mt-3 hidden text-center text-sm font-medium text-emerald-700">Incident payload copied. Webhook handoff confirmed for demo.</p>
+			<p id="error-message" class="mt-5 text-slate-700">Please try again in a moment. If the problem continues, contact support.</p>
+			<button id="dismiss-modal" class="mt-6 w-full rounded-lg bg-slate-800 px-4 py-3 font-semibold text-white hover:bg-slate-900">Try Again</button>
 		</section>
 	</div>
 
@@ -74,10 +66,21 @@
 		const applyButton = document.getElementById('apply-button');
 		const spinner = document.getElementById('spinner');
 		const buttonLabel = document.getElementById('button-label');
-		let incidentPayload;
+		const requestTimeoutMilliseconds = 5000;
+
+		function showDiagnostic({ title, eyebrow, message }) {
+			document.getElementById('diagnostic-title').textContent = title;
+			document.getElementById('diagnostic-eyebrow').textContent = eyebrow;
+			document.getElementById('error-message').textContent = message;
+			modal.classList.remove('hidden');
+			modal.classList.add('flex');
+		}
 
 		form.addEventListener('submit', async (event) => {
 			event.preventDefault();
+			const requestStatus = document.getElementById('request-status');
+			requestStatus.textContent = 'Applying your promo code...';
+			requestStatus.classList.remove('hidden');
 			applyButton.disabled = true;
 			spinner.classList.remove('hidden');
 			buttonLabel.textContent = 'Applying discount...';
@@ -87,22 +90,34 @@
 				code: document.getElementById('promo-code').value,
 				ticketId: document.getElementById('ticket-id').value
 			};
+			const abortController = new AbortController();
+			const requestTimeout = setTimeout(() => abortController.abort(), requestTimeoutMilliseconds);
 
 			try {
 				const response = await fetch('/api/v1/promos/redeem', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json', 'X-Ticket-ID': request.ticketId },
-					body: JSON.stringify(request)
+					body: JSON.stringify(request),
+					signal: abortController.signal
 				});
 				const result = await response.json();
 
 				if (response.status === 500) {
-					incidentPayload = { ticketId: request.ticketId, userId: request.userId, diagnostic: result };
-					document.getElementById('exception-badge').textContent = result.error || 'System.NullReferenceException';
-					document.getElementById('location').textContent = (result.location || 'PromoController.cs:line 35').replace(':line ', ' (Line ') + ')';
-					document.getElementById('stack-trace').textContent = result.stackTraceSnippet || result.message;
-					modal.classList.remove('hidden');
-					modal.classList.add('flex');
+					const isMongoConnectionError = result.errorCode === 'databaseUnavailable';
+
+					if (isMongoConnectionError) {
+						showDiagnostic({
+							title: 'Database Connection Unavailable',
+							eyebrow: 'Checkout unavailable',
+							message: result.message
+						});
+					} else {
+						showDiagnostic({
+							title: 'We couldn\'t apply your promo code',
+							eyebrow: 'Checkout unavailable',
+							message: result.message || 'Please try again in a moment. If the problem continues, contact support.'
+						});
+					}
 				} else if (response.ok) {
 					const successMessage = document.getElementById('success-message');
 					successMessage.textContent = result.message;
@@ -110,9 +125,19 @@
 				} else {
 					alert(result.error || 'Unable to apply promo code.');
 				}
-			} catch {
-				alert('The API could not be reached.');
+			} catch (error) {
+				if (error?.name === 'AbortError') {
+					showDiagnostic({
+						title: 'The checkout is taking too long',
+						eyebrow: 'Checkout unavailable',
+						message: 'Please try again in a moment. If the problem continues, contact support.'
+					});
+				} else {
+					alert('The API could not be reached.');
+				}
 			} finally {
+				clearTimeout(requestTimeout);
+				requestStatus.classList.add('hidden');
 				applyButton.disabled = false;
 				spinner.classList.add('hidden');
 				buttonLabel.textContent = 'Apply Discount';
@@ -124,9 +149,9 @@
 			modal.classList.remove('flex');
 		});
 
-		document.getElementById('incident-button').addEventListener('click', async () => {
-			await navigator.clipboard?.writeText(JSON.stringify(incidentPayload, null, 2));
-			document.getElementById('incident-confirmation').classList.remove('hidden');
+		document.getElementById('dismiss-modal').addEventListener('click', () => {
+			modal.classList.add('hidden');
+			modal.classList.remove('flex');
 		});
 	</script>
 </body>

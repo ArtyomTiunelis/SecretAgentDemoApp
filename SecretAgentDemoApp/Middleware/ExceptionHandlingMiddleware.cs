@@ -43,13 +43,18 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/json";
 
+            var exceptionDetails = exception.ToString();
+            var isDatabaseUnavailable = exceptionDetails.Contains("Mongo", StringComparison.OrdinalIgnoreCase) &&
+                (exceptionDetails.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                 exceptionDetails.Contains("connection", StringComparison.OrdinalIgnoreCase));
+
             await context.Response.WriteAsJsonAsync(new
             {
                 status = StatusCodes.Status500InternalServerError,
-                error = exception.GetType().FullName,
-                message = exception.Message,
-                location = "PromoController.cs:line 35",
-                stackTraceSnippet = "at PromoApp.Api.Controllers.PromoController.RedeemPromo(PromoRedeemRequest request) in /src/Controllers/PromoController.cs:line 35"
+                errorCode = isDatabaseUnavailable ? "databaseUnavailable" : "requestFailed",
+                message = isDatabaseUnavailable
+                    ? "We can't reach the checkout service right now. Please try again shortly."
+                    : "We couldn't apply your promo code right now. Please try again."
             });
         }
     }
